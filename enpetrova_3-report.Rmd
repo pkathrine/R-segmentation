@@ -1,0 +1,388 @@
+---
+title: "Индивидуальное задание по проекту"
+author: "Группа N16, enpetrova_3"
+output: 
+  html_document:
+    code_folding: hide
+---
+
+### Задание 
+
+Индивидуальное задание: 
+
+
+```{r, message = FALSE, warning = FALSE}
+library(R3PO)
+R3PO::get_hw_ind_questions(login = "enpetrova_3")
+```
+ 
+
+### Предыдущий код
+
+```{r, message = FALSE, warning = FALSE}
+# предварительный код
+
+load("~/shared/minor2_2020/data/good_read/books_g_4.RData")
+
+library(dplyr)
+library(tidyverse)
+library(tidytext)
+library(readr)
+library(MASS)
+library(coin)
+library(lubridate)
+library(tidyr)
+library(lsa)
+library(ggraph)
+library(igraph)
+library(ggplot2)
+library(stringr)
+
+
+enstopwords = data.frame(words=c(stopwords::stopwords("en")), stringsAsFactors=FALSE)
+goodread_comics$average_rating <- as.numeric(goodread_comics$average_rating)
+
+load("~/shared/minor2_2020/data/good_read/reviews_g_4.RData")
+
+
+reviews.bigrams = goodread_reviews %>% 
+  unnest_tokens(review_assess, review_text, token = "ngrams", n = 2)
+library(tidyr)
+reviews.bifiltered = reviews.bigrams %>% 
+  separate(review_assess, c("word1", "word2"), sep = " ") %>% 
+  dplyr::filter(!word1 %in% enstopwords$words) %>% 
+  dplyr::filter(!word2 %in% enstopwords$words) 
+bigram.united <- reviews.bifiltered %>%
+  unite(review_assess, word1, word2, sep = " ")
+
+bigram_tf_idf_theme <- bigram.united %>%
+  rename(review_theme = review_assess) %>% 
+  dplyr::count(review_theme, book_id) %>%
+  bind_tf_idf(review_theme, book_id, n) %>%
+  arrange(desc(tf_idf))
+
+bigram.united_theme <- left_join(bigram.united, bigram_tf_idf_theme) %>% 
+  arrange(desc(tf_idf)) %>% 
+  group_by(book_id) %>% 
+  filter(row_number() == 1) %>% 
+  dplyr::select(book_id, review_theme)
+
+goodread_comics = left_join(goodread_comics, bigram.united_theme, by = 'book_id')
+
+
+
+bigram_tf_idf <- bigram.united %>%
+  dplyr::count(review_assess, rating) %>%
+  bind_tf_idf(review_assess, rating, n) %>%
+  arrange(desc(tf_idf))
+
+bigram_tf_idf_high <- bigram_tf_idf %>% 
+  filter(rating == 5) %>% 
+  mutate(bigram_recommended = 'yes') %>% 
+  dplyr::select(review_assess, tf_idf, bigram_recommended)
+
+bigram_tf_idf_low <- bigram_tf_idf %>%
+  filter(rating == 1 | rating == 2) %>% 
+  mutate(bigram_recommended = 'no') %>% 
+  dplyr::select(review_assess, bigram_recommended, tf_idf)
+
+bigram_tf_idf_new <- full_join(bigram_tf_idf_high, bigram_tf_idf_low) %>% 
+  filter(tf_idf > 0) %>% 
+  arrange(desc(tf_idf))
+
+# оставляю только уникальные строки, объединяю датасеты
+bigram.united_new <- left_join(bigram.united, bigram_tf_idf_new) %>% 
+  na.omit() %>% 
+  arrange(desc(tf_idf)) %>% 
+  dplyr::select(book_id, review_assess, bigram_recommended) %>% 
+  group_by(book_id) %>% 
+  filter(row_number() == 1)
+
+goodread_comics = left_join(goodread_comics, bigram.united_new, by = 'book_id') 
+
+
+afinn_sent <- get_sentiments('afinn')
+colnames(afinn_sent) <- c('words','value')
+
+reviews_words <- goodread_reviews %>% 
+  unnest_tokens(words, review_text, token = 'words') %>% 
+  anti_join(enstopwords)
+
+reviews_sent <- inner_join(reviews_words, afinn_sent, by = c('words')) %>% 
+  group_by(book_id) %>%  
+  summarise(sent = round(mean(value), 2)) 
+  
+# Объединяю датасеты
+goodread_comics <- inner_join(goodread_comics, reviews_sent, by = 'book_id')
+
+
+
+library(LDAvis)
+library(topicmodels)
+
+description_words <- goodread_comics %>% 
+  unnest_tokens(words, description, token = 'words') %>% 
+  anti_join(enstopwords)
+
+description_words_topics = description_words %>% group_by(book_id, words) %>% count() %>% 
+  filter(words != 'new' & words != 'first' & words != 'time' & words != 'just' & words != 'one' & 
+           words != 'story' & words != 'world' & words != 'comics'  & words != 'book' & words != 'comic' & 
+           words != 'series' & words != 'can' & words != '1' & words != 'man' & words != 'yang' & words != 'der' & 
+           words != 'dan' & words != 'und' & words != 'now' & words != 'life' & words != 'collecting' & 
+           words != 'graphic' & words != 'must' & words != 'collects' & words != 'find'  & words != 'volume' & 
+           words != 'also' & words != 'collection'& words != 'de'& words != 'e'& words != 'que'& words != 'la') 
+description_dtm = description_words_topics %>% cast_dtm(book_id, words, n)
+
+# выбираю 8 тем на основе слов из описания для каждого комикса
+ap_lda = LDA(description_dtm, k = 8, control = list(seed = 1234))
+ap_documents = tidy(ap_lda, matrix = "gamma")
+
+ap_documents <- ap_documents %>% group_by(document) %>% arrange(desc(gamma)) %>% top_n(1)
+ap_documents$document <- as.double(ap_documents$document)
+goodread_comics <- left_join(goodread_comics, ap_documents, by = c('book_id' = 'document')) %>%
+  dplyr::select(-gamma)
+
+
+
+comics <- goodread_comics %>% rename (popshelf0 = popular_shelves.0.name, popshelf1 = popular_shelves.1.name, popshelf2 = popular_shelves.2.name, popshelf3 = popular_shelves.3.name, author0id = authors.0.author_id, author0role = authors.0.role, author1id = authors.1.author_id, author1role = authors.1.role)
+
+
+
+authors <- comics %>% dplyr::select(title, author0id, author1id, average_rating, ratings_count, publisher, book_id)
+authors$both_authors <- paste(authors$author0id, authors$author1id)
+
+authors$both_authors <- as.character(authors$both_authors)
+authors$author0id <- as.character(authors$author0id)
+authors$author1id <- as.character(authors$author1id)
+authors$book_id <- as.character(authors$book_id)
+
+#unique(authors$author0id)
+for_net_authors <- data.frame(author = c(authors$author0id, authors$author1id) %>% unique())
+
+for_net_titles <- data.frame(authors$book_id)
+
+for (i in for_net_authors$author) {for_net_titles[[paste0("author",i)]] <- grepl(paste('^', as.character(i), '\ ', sep = ''), authors$both_authors)| grepl(paste('\ ', as.character(i), '$', sep = ''), authors$both_authors)}
+
+
+adj_matrix <- lapply(for_net_titles[,2:688], as.integer) %>% data.frame()
+adj_matrix <- cbind(authors$book_id, adj_matrix)
+cosine_similarity <- lsa::cosine(t(as.matrix(adj_matrix[, -1]))) %>% data.frame() %>% +0.01 %>% round()
+
+colnames(cosine_similarity) <- comics$book_id
+rownames(cosine_similarity) <- comics$book_id
+authors_for_net <- simplify(graph_from_adjacency_matrix(as.matrix(cosine_similarity), mode = 'undirected'))
+
+delete_isolates2<-function(q){
+  igraph::delete.vertices(q,which(igraph::degree(q)<= 1))
+}
+
+authors_for_net <- delete_isolates2(authors_for_net)
+
+
+eb_community_graph <- edge.betweenness.community(authors_for_net)
+ids_from_authors_for_net <- attributes(V(authors_for_net))$names
+comics <- comics %>% arrange(factor(book_id, levels = ids_from_authors_for_net))
+V(authors_for_net)$community <- eb_community_graph$membership
+from_graph <- igraph::as_data_frame(authors_for_net, what = c('vertices'))
+```
+
+
+```{r, message = FALSE, warning = FALSE}
+library(recommenderlab)
+library(readr)
+#Исключаем ненужные колонки
+goodread_reviews_cf <- goodread_reviews %>% 
+  dplyr::select(-date_added, -review_text, -review_id)
+#Переводим в широкий формат
+ratings = pivot_wider(goodread_reviews_cf, names_from = book_id, values_from = rating)
+#Удаляем колонку user_id, но сохраняем ее в качестве userNames
+userNames = ratings$user_id
+ratings = dplyr::select(ratings, -user_id)
+#Убираем данные, где очень мало наблюдений (пользователи, оценившие меньше 7 комиксов, и комиксы, имеющие меньше 10 оценок)
+ratings = as.matrix(ratings)
+rownames(ratings) = userNames
+r = as(ratings, "realRatingMatrix")
+ratings_books <- r[rowCounts(r) > 7, colCounts(r) > 10]
+
+
+
+recc = function(user,num){
+  recc_model = Recommender(data = ratings_books, method = "IBCF")
+  recc_predicted <- predict(object = recc_model, newdata = ratings_books, n=num)
+
+  recc_user_1 <- recc_predicted@items[[user]]
+  books_user_1 <- recc_predicted@itemLabels[recc_user_1]
+  if(identical(goodread_comics$title[match(books_user_1, goodread_comics$book_id)],character(0))){
+    return(print(paste("К сожалению, мы не смогли найти похожих на вас пользователей, так как у вас слишком мало оценок, но вот топ комиксов нашей базы :",
+                       c(arrange(goodread_comics, by_group ='average_rating') %>%
+                           dplyr::select(title) %>%
+                           top_n(num)))))
+  }
+  else{
+    return(goodread_comics$title[match(books_user_1, goodread_comics$book_id)])
+  }
+}
+
+
+recc("1dcc10935c0022c1bd9c7a3067b883c8", 4)
+```
+
+
+```{r, message = FALSE, warning = FALSE}
+data  = goodread_comics %>% dplyr::select(book_id, sent, topic, popular_shelves.0.name, popular_shelves.1.name, popular_shelves.2.name, popular_shelves.3.name, publisher, publication_year) %>% cbind(really = 1)
+
+data$publication_year=as.numeric(data$publication_year)
+
+colnames(from_graph)[1] <- "book_id"
+from_graph$book_id=as.numeric(from_graph$book_id)
+data = dplyr::left_join(data, from_graph)
+
+data$publisher[data$publisher==""] <- NA 
+
+data = data %>% filter(is.na(data$publisher)==FALSE)
+data = data %>% filter(is.na(data$topic)==FALSE)
+data = data %>% filter(is.na(data$publication_year)==FALSE)
+data = data %>% filter(is.na(data$community)==FALSE)
+
+
+data$topic=str_replace_all(data$topic, "1", "first")
+data$topic=str_replace_all(data$topic, "2", "second")
+data$topic=str_replace_all(data$topic, "3", "third")
+data$topic=str_replace_all(data$topic, "4", "forth")
+data$topic=str_replace_all(data$topic, "5", "fifth")
+data$topic=str_replace_all(data$topic, "6", "sixth")
+data$topic=str_replace_all(data$topic, "7", "seventh")
+data$topic=str_replace_all(data$topic, "8", "eighth")
+
+eval_data = dplyr::select(data, book_id, sent, topic, popular_shelves.0.name, popular_shelves.1.name, popular_shelves.2.name, popular_shelves.3.name, publisher, publication_year, community)
+
+df1 = data.frame(book_id=data$book_id, shelf = c(data$popular_shelves.0.name, data$popular_shelves.1.name, data$popular_shelves.2.name, data$popular_shelves.3.name))
+data = left_join(data, df1, by="book_id")
+
+data = data %>% dplyr::select(-popular_shelves.0.name, -popular_shelves.1.name, -popular_shelves.2.name, -popular_shelves.3.name) 
+
+
+data = data %>%  pivot_wider(names_from = shelf, values_from = really, values_fill = 0) %>% cbind(really = 1) %>%  pivot_wider(names_from = publisher, values_from = really, values_fill = 0) %>% cbind(really = 1) %>%  pivot_wider(names_from = topic, values_from = really, values_fill = 0) %>% cbind(really = 1) %>%  pivot_wider(names_from = community, values_from = really, values_fill = 0)
+
+data$publication_year = (data$publication_year - mean(data$publication_year))/sd(data$publication_year)
+data$sent= (data$sent - mean(data$sent))/sd(data$sent)
+
+rownames = data$book_id
+data = data %>% dplyr::select(-book_id) 
+rownames(data) = rownames
+sim = lsa::cosine(t(as.matrix(data)))
+diag(sim) = 0
+
+data_full = left_join(eval_data, goodread_comics, by="book_id")
+
+
+mostSimilar = function(y,x){
+   IDComics = as.character(filter(data_full, title == y) %>% dplyr::select(book_id))
+   if ("TRUE" %in% unique(rownames==as.character(filter(data_full, title == y) %>% dplyr::select(book_id)))){
+     mostSimilar = max(sim[ ,IDComics], na.rm = T)
+     a = which(sim[,IDComics] == mostSimilar, arr.ind = TRUE)
+     mostSimilar = head(sort(sim[ ,IDComics], decreasing = T), n = x)
+     a = sim[ ,IDComics]
+     result = names(mostSimilar)
+     return(filter(data_full,book_id %in% result) %>% dplyr::select(title))
+
+   }
+   else{
+     return(print(paste("К сожалению, мы не смогли найти похожие комиксы, но вот топ нашей базы :",c(arrange(goodread_comics, by_group='average_rating') %>% dplyr::select(title)%>%top_n(x)))))
+   }
+}
+
+mostSimilar("Age of Ultron", 4)
+
+```
+
+
+### Решение
+
+Чтобы найти самые непохожие комимксы для пользователя, можно взять из матриц схожести комиксы не с высокими показателями, а, ноаборот, взять самые низкие. Поэтому в контент-бейсд поставим decreasing = F и найдем самые непохожие комиксы, а в коллаборативной фильтрации расширим изначальную матрицу чтобы туда попали комиксы и неоцененные другими пользователями, но выбираться будут не те, что ему не понравились, а те, что никто еще почти не оценивал.
+
+```{r, message = FALSE, warning = FALSE}
+#
+ratings = as.matrix(ratings)
+rownames(ratings) = userNames
+r = as(ratings, "realRatingMatrix")
+ratings_books1 <- r
+
+```
+
+```{r, message = FALSE, warning = FALSE}
+recc1 = function(user,num){
+  recc_model = Recommender(data = ratings_books1, method = "IBCF")
+  recc_predicted <- predict(object = recc_model, newdata = ratings_books1, n=num)
+
+  recc_user_1 <- recc_predicted@items[[user]]
+  books_user_1 <- recc_predicted@itemLabels[recc_user_1]
+  if(identical(goodread_comics$title[match(books_user_1, goodread_comics$book_id)],character(0))){
+    return(print(paste("К сожалению, мы не смогли найти похожих на вас пользователей, так как у вас слишком мало оценок, но вот топ комиксов нашей базы :",
+                       c(arrange(goodread_comics, by_group ='average_rating') %>%
+                           dplyr::select(title) %>%
+                           top_n(num)))))
+  }
+  else{
+    return(goodread_comics$title[match(books_user_1, goodread_comics$book_id)])
+  }
+}
+
+
+recc1("1dcc10935c0022c1bd9c7a3067b883c8", 4)
+
+```
+
+
+```{r, message = FALSE, warning = FALSE}
+diag(sim) = 1
+mostSimilar1 = function(y,x){
+   IDComics = as.character(filter(data_full, title == y) %>% dplyr::select(book_id))
+   if ("TRUE" %in% unique(rownames==as.character(filter(data_full, title == y) %>% dplyr::select(book_id)))){
+     mostSimilar = min(sim[ ,IDComics], na.rm = T)
+     a = which(sim[,IDComics] == mostSimilar, arr.ind = TRUE)
+     mostSimilar = head(sort(sim[ ,IDComics], decreasing = F), n = x)
+     a = sim[ ,IDComics]
+     result = names(mostSimilar)
+     return(filter(data_full,book_id %in% result) %>% dplyr::select(title))
+
+   }
+   else{
+     return(print(paste("К сожалению, мы не смогли найти похожие комиксы, но вот топ нашей базы :",c(arrange(goodread_comics, by_group='average_rating') %>% dplyr::select(title)%>%top_n(x)))))
+   }
+}
+
+mostSimilar1("Age of Ultron", 4)
+```
+
+### Пример
+
+```{r}
+recc("57bc780fa5034e6c6e8ac64e732ef1f3", 4)
+```
+
+```{r}
+recc1("57bc780fa5034e6c6e8ac64e732ef1f3", 4)
+```
+
+
+
+```{r}
+mostSimilar("Age of Ultron", 4)
+```
+
+
+```{r}
+mostSimilar1("Age of Ultron", 4)
+```
+
+
+
+### Выводы
+
+В итоге если пользователь хочет максимально непохожее на что нибудь, он может воспользоваться контент-бейсд рекомендацией, а если просто что то новое, но не то, что ему не понравилось бы то, коллаборативной. Так мы видим, что первые две рекомендации отличаются друг от друга только некоторыми комисками, то в последних двух совершенно разные комиксы. В принципе можно было бы сделать в коллаборативной новую матрицу взяв основную и умножив на -1 или взять обратную величину, но я оставила выбор, т.к. контент-бейсд в принципе удовлетворяет нужду в абсолютно новых комиксах, так как основана на том, что комикс не похож по максимальному количеству критериев на любимый комикс пользователя.
+
+
+
+
+
