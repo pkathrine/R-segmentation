@@ -1,0 +1,168 @@
+---
+title: "Анализ сетей книг"
+author: "Петрова Екатерина, enpetrova_3"
+output: html_document
+---
+
+```{r message = FALSE, warning=FALSE, echo = F}
+knitr::opts_chunk$set(echo = TRUE)
+library(readr)
+library(dplyr)
+library(ggplot2)
+library(tidyverse)
+library(lubridate)
+library(ggplot2)
+library(igraph)
+library(devtools)
+library(visNetwork)
+
+```
+
+```{r message = FALSE, warning=FALSE, echo = F}
+library(igraph)
+comics_net = read_graph("~/shared/minor2_2020/data/good_read/book_net.hml", 
+                        format = "graphml")
+```
+
+Информация о книгах (появится датафрейм books_net_info)
+
+```{r}
+load("~/shared/minor2_2020/data/good_read/books_net_info.RData")
+```
+
+## Исследовательские вопросы
+
+**Есть ли склонность оценивать комиксы одинаково, если они относятся к одной категории?** Берем во внимание 4ую полку, так как там наибольшее количество уникальных значений.
+
+**Есть ли склонность оценивать комиксы одинаково, судя по количеству страниц в нем?** Другими словами, влияет ли большое или маленькое количество страниц на то, одинаково ли оценивают эти комиксы.
+
+
+```{r message = FALSE, warning=FALSE, echo = F}
+g_comics_net = comics_net
+attr = books_net_info %>% dplyr::select(book_id, popular_shelves.3.name, num_pages)
+attr$num_pages = attr$num_pages %>% as.integer
+attr$popular_shelves.3.name = attr$popular_shelves.3.name %>% as.factor()
+
+attr = attr %>% na.omit()
+
+
+V(g_comics_net)$popular_shelves.3.name = attr$popular_shelves.3.name
+V(g_comics_net)$num_pages = attr$num_pages
+
+#assortativity(g_comics_net, V(g_comics_net)$num_pages, directed = F)
+```
+Сначала проверяем на случайность резултатов, которые мы получим через смешивание данных.
+
+```{r message = FALSE, warning=FALSE, echo = F}
+g = g_comics_net
+number_of_permutations = 2000
+
+assortativity_shuffled_rate  <- rep(NA, number_of_permutations)
+for(i in 1:number_of_permutations){
+  V(g)$attr_shuffled_rate = sample(V(g)$popular_shelves.3.name, replace = F)
+  assortativity_shuffled_rate[i] = assortativity_nominal(g,as.factor(V(g)$attr_shuffled_rate))
+}
+
+assortativity_shuffled_page  <- rep(NA, number_of_permutations)
+for(i in 1:number_of_permutations){
+  V(g)$attr_shuffled_page = sample(V(g)$num_pages, replace = F)
+  assortativity_shuffled_page[i] = assortativity(g,as.factor(V(g)$attr_shuffled_page))
+}
+
+q1 <- quantile(assortativity_shuffled_rate, c(0.05, 0.95))
+q1
+
+q2 <- quantile(assortativity_shuffled_page, c(0.05, 0.95))
+q2
+```
+```{r message = FALSE, warning=FALSE, echo = F}
+assortativity_real_rate = assortativity_nominal(g, V(g)$popular_shelves.3.name, directed = F)
+assortativity_real_rate
+
+assortativity_real_page = assortativity(g, V(g)$num_pages, directed = F)
+assortativity_real_page
+
+paste("Ассортативность по 4 полке:", round(assortativity_real_rate, 4))
+paste("Ассортативность по количеству страниц:", round(assortativity_real_page, 4))
+```
+
+```{r message = FALSE, warning=FALSE, echo = F}
+pvalue1 = sum(abs(assortativity_shuffled_rate) >= abs(assortativity_real_rate)) / number_of_permutations
+pvalue1
+
+pvalue2 = sum(abs(assortativity_shuffled_page) >= abs(assortativity_real_page)) / number_of_permutations
+pvalue2
+```
+
+
+## Выявление значимых вершин
+
+**Использованные меры центральности: **
+
+Какие комиксы, которые оценили похоже на других, имеют самое выгодное положение? (связывают разные образовавшиеся группы). Поэтому человеку, который как-то оценил этот комикс откроются новые другие нруппы комиксов, которые ему раньше не предлагали. Например, если человек читал манги и однажды оценил хоррор мангу с "выгодным положением", то ему откроется огромный пласт с новыми хоррор комиксами.
+
+Какие комиксы наиболее близки к остальным, т.е. оценивание этого комикса даст наибольшее количество других комиксов, и, например, от оценивания его вероятнее всего, что ему предложат все остальные (кроме тех, кто не связан ни с каким или с малым количеством других комиксов)
+
+```{r message = FALSE, warning=FALSE, echo = F}
+betweenness(comics_net)
+max(betweenness(comics_net))
+```
+
+```{r message = FALSE, warning=FALSE, echo = F}
+closeness(comics_net)
+max(closeness(comics_net))
+```
+
+
+#### Визуализация
+
+```{r message = FALSE, warning=FALSE, echo = F}
+plot(comics_net,
+vertex.size = betweenness(comics_net)/100,
+layout = layout.davidson.harel)
+```
+
+```{r message = FALSE, warning=FALSE, echo = F}
+plot(comics_net, 
+     vertex.size = closeness(comics_net)*1500, 
+     vertex.label.cex = closeness(comics_net)*70,
+     layout = layout.davidson.harel)
+```
+
+
+#### Выводы
+
+Мы получили, что ассортативность в обоих случаях очень близка к нулю, поэтому склонность оценивать комиксы одинаково по категории полки и количеству страниц низкая. Об этом можно судить с вероятностью ошибки в 16% и 52% соответственно — то есть с достаточно большой вероятностью ошибки.
+
+
+## Выявление групп книг
+
+**Использованные меры выделения сообществ: Girvan–Newman algorithm и Fast-Greedy **
+
+```{r message = FALSE, warning=FALSE, echo = F}
+ebcommune <- edge.betweenness.community(comics_net)
+max(membership(ebcommune))
+modularity(ebcommune)
+```
+
+```{r message = FALSE, warning=FALSE, echo = F}
+fgcommune <- fastgreedy.community(comics_net)
+max(membership(fgcommune))
+modularity(fgcommune)
+```
+
+
+#### Визуализация
+
+```{r message = FALSE, warning=FALSE, echo = F}
+plot(fgecommune, comics_net, vertex.label = NA)
+```
+
+
+#### Выводы
+
+При использовании двух методов разбиения на группы алгоритм Girvan–Newman показал большую модулярность и смог разбить на группу с 66 комиксами, в то время как у Fast-Greedy максимальным является значение в 28 комиксов. Можно увидеть множество групп, которые помогут в выставлении рекомендаций людям, которые оставляли оценки, которым скорее всего порекомендуют комиксы из одной группы.
+
+## Общие выводы
+
+В этой работе можно пронаблюдать как использование метрик центральности, выделения групп может помочь в исполнении алгоритмов рекомендаций комиксов.
